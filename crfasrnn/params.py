@@ -21,7 +21,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
-
+import torch
 
 class DenseCRFParams(object):
     """
@@ -30,6 +30,7 @@ class DenseCRFParams(object):
 
     def __init__(
         self,
+        image=None,
         alpha=160.0,
         beta=3.0,
         gamma=3.0,
@@ -47,8 +48,36 @@ class DenseCRFParams(object):
             spatial_ker_weight:     Spatial kernel weight
             bilateral_ker_weight:   Bilateral kernel weight
         """
-        self.alpha = alpha
-        self.beta = beta
-        self.gamma = gamma
-        self.spatial_ker_weight = spatial_ker_weight
-        self.bilateral_ker_weight = bilateral_ker_weight
+        if image is not None:
+            self.calculate_params(image) 
+        else:
+            self.alpha = alpha
+            self.beta = beta
+            self.gamma = gamma
+            self.spatial_ker_weight = spatial_ker_weight
+            self.bilateral_ker_weight = bilateral_ker_weight
+
+    def calculate_params(self, image):
+        # Generate a grid of voxel positions using their indices
+        _, _, d, h, w = image.shape
+        z = torch.arange(d).view(d, 1, 1).expand(d, h, w)
+        y = torch.arange(h).view(1, h, 1).expand(d, h, w)
+        x = torch.arange(w).view(1, 1, w).expand(d, h, w)
+        
+        # Flatten the grid to get a list of position values
+        positions = torch.stack((z, y, x), dim=-1).reshape(-1, 3)
+        
+        # Calculate the standard deviation for the positions
+        std_position = positions.float().std()
+        
+        # Calculate the standard deviation for the values in the image
+        std_value = image.std()
+
+        print(std_position, std_value) # tensor(8.6555) tensor(1.3573)
+
+        self.alpha = 2.0*std_value
+        self.beta = 2.0*std_position
+        self.gamma = 2.0*std_position
+        self.spatial_ker_weight = 1.0
+        self.bilateral_ker_weight = 1.0
+

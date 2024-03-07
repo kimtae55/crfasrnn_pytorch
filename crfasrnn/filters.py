@@ -47,9 +47,7 @@ class PermutoFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_q_out):
         feature_saved = ctx.saved_tensors[0]
-        grad_q_back = permuto_cpp.backward(
-            grad_q_out.contiguous(), feature_saved.contiguous()
-        )[0]
+        grad_q_back = permuto_cpp.backward(grad_q_out.contiguous(), feature_saved.contiguous())[0]
         return grad_q_back, None  # No need of grads w.r.t. features
 
 
@@ -62,19 +60,23 @@ def _spatial_features(image, sigma):
         sigma:  Bandwidth parameter
 
     Returns:
-        Tensor of shape [h, w, 2] with spatial features
+        Tensor of shape [d, h, w, 2] with spatial features
     """
     sigma = float(sigma)
-    _, h, w = image.size()
-    x = torch.arange(start=0, end=w, dtype=torch.float32, device=_CPU)
-    xx = x.repeat([h, 1]) / sigma
+    _, d, h, w = image.size()
+    z = torch.arange(start=0, end=d, dtype=torch.float32, device=image.device).view(-1, 1, 1)
+    zz = z.repeat([1, h, w]) / sigma
 
-    y = torch.arange(
-        start=0, end=h, dtype=torch.float32, device=torch.device("cpu")
-    ).view(-1, 1)
-    yy = y.repeat([1, w]) / sigma
+    x = torch.arange(start=0, end=w, dtype=torch.float32, device=image.device)
+    xx = x.repeat([d, h, 1]) / sigma
 
-    return torch.stack([xx, yy], dim=2)
+    y = torch.arange(start=0, end=h, dtype=torch.float32, device=image.device).view(1, -1, 1)
+    yy = y.repeat([d, 1, w]) / sigma
+
+    print('inside _spatial_features')
+    print(torch.stack([zz, yy, xx], dim=3).shape)
+    print(torch.stack([zz, yy, xx], dim=3))
+    return torch.stack([zz, yy, xx], dim=3) 
 
 
 class AbstractFilter(ABC):
@@ -95,8 +97,8 @@ class AbstractFilter(ABC):
         pass
 
     def _calc_norm(self, image):
-        _, h, w = image.size()
-        all_ones = torch.ones((1, h, w), dtype=torch.float32, device=_CPU)
+        _, d, h, w = image.size()
+        all_ones = torch.ones((1, d, h, w), dtype=torch.float32, device=image.device)
         norm = PermutoFunction.apply(all_ones, self.features)
         return 1.0 / (norm + _EPS)
 
@@ -140,8 +142,8 @@ class BilateralFilter(AbstractFilter):
         super(BilateralFilter, self).__init__(image)
 
     def _calc_features(self, image):
-        xy = _spatial_features(
-            image, self.alpha
-        )  # TODO Possible optimisation, was calculated in the spatial kernel
-        rgb = (image / float(self.beta)).permute(1, 2, 0)  # Channel last order
-        return torch.cat([xy, rgb], dim=2)
+        # Assuming image tensor shape is (channels, depth, height, width) for 3D data
+        xyz = _spatial_features(image, self.alpha)
+        # Adapting for 3D: Ensure image is permuted to shape (depth, height, width, channels)
+        rgb = (image.permute(1, 2, 3, 0) / float(self.beta))  # Adjusting for channel last order in 3D
+        return torch.cat([xyz, rgb], dim=3)  # Concatenating spatial and color features

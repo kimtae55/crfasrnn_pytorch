@@ -109,3 +109,45 @@ def get_label_image(probs, img_h, img_w, original_size):
     label_im.putpalette(_PALETTE)
     label_im = label_im.resize(original_size)
     return label_im
+
+def p_lis(gamma_1, threshold=0.1, label=None, savepath=None):
+    '''
+    Rejection of null hypothesis are shown as 1, consistent with online BH, Q-value, smoothFDR methods.
+    # LIS = P(theta = 0 | x)
+    # gamma_1 = P(theta = 1 | x) = 1 - LIS
+    '''
+    gamma_1 = gamma_1.ravel()
+    dtype = [('index', int), ('value', float)]
+    size = gamma_1.shape[0]
+
+    # flip
+    lis = np.zeros(size, dtype=dtype)
+    lis[:]['index'] = np.arange(0, size)
+    lis[:]['value'] = 1-gamma_1 
+
+    # get k
+    lis = np.sort(lis, order='value')
+    cumulative_sum = np.cumsum(lis[:]['value'])
+    k = np.argmax(cumulative_sum > (np.arange(len(lis)) + 1)*threshold)
+
+    signal_lis = np.zeros(size)
+    signal_lis[lis[:k]['index']] = 1
+
+    if savepath is not None:
+        np.save(os.path.join(savepath, 'gamma.npy'), gamma_1)
+        np.save(os.path.join(savepath, 'lis.npy'), signal_lis)
+
+    if label is not None:
+        # GT FDP
+        rx = k
+        sigx = np.sum(1-label[lis[:k]['index']])
+        fdr = sigx / rx if rx > 0 else 0
+
+        # GT FNR
+        rx = size - k
+        sigx = np.sum(label[lis[k:]['index']]) 
+        fnr = sigx / rx if rx > 0 else 0
+
+        # GT ATP
+        atp = np.sum(label[lis[:k]['index']]) 
+        return fdr, fnr, atp

@@ -25,7 +25,7 @@ SOFTWARE.
 import torch
 import torch.nn as nn
 
-from crfasrnn.filters import SpatialFilter, BilateralFilter
+from crfasrnn.filters_plattice import SpatialFilter3D, BilateralFilter3D
 from crfasrnn.params import DenseCRFParams
 
 
@@ -38,7 +38,7 @@ class CrfRnn(nn.Module):
     ICCV 2015 (https://arxiv.org/abs/1502.03240).
     """
 
-    def __init__(self, num_labels, num_iterations=5, crf_init_params=None):
+    def __init__(self, num_labels, num_iterations=5, image=None, crf_init_params=None):
         """
         Create a new instance of the CRF-RNN layer.
 
@@ -50,7 +50,7 @@ class CrfRnn(nn.Module):
         super(CrfRnn, self).__init__()
 
         if crf_init_params is None:
-            crf_init_params = DenseCRFParams()
+            crf_init_params = DenseCRFParams(image)
 
         self.params = crf_init_params
         self.num_iterations = num_iterations
@@ -82,52 +82,69 @@ class CrfRnn(nn.Module):
 
     def forward(self, image, logits):
         """
-        Perform CRF inference.
+        Perform CRF inference for 3D data.
 
         Args:
-            image:  Tensor of shape (3, h, w) containing the RGB image
-            logits: Tensor of shape (num_classes, h, w) containing the unary logits
+            image:  Tensor of shape (3, D, H, W) containing the RGBD or grayscale volume
+            logits: Tensor of shape (num_classes, D, H, W) containing the unary logits
         Returns:
             log-Q distributions (logits) after CRF inference
         """
         if logits.shape[0] != 1:
             raise ValueError("Only batch size 1 is currently supported!")
 
-        image = image[0]
-        logits = logits[0]
+        # Adjust the shapes for 3D data
+        image = image[0]  # Assuming image shape is (3, D, H, W)
+        logits = logits[0]  # Assuming logits shape is (num_classes, D, H, W)
 
-        spatial_filter = SpatialFilter(image, gamma=self.params.gamma)
-        bilateral_filter = BilateralFilter(
-            image, alpha=self.params.alpha, beta=self.params.beta
-        )
-        _, h, w = image.shape
+        spatial_filter = SpatialFilter3D(image, gamma=self.params.gamma)
+        bilateral_filter = BilateralFilter3D(image, alpha=self.params.alpha, beta=self.params.beta)
+
+        _, d, h, w = image.shape
         cur_logits = logits
 
         for _ in range(self.num_iterations):
             # Normalization
             q_values = self._softmax(cur_logits)
 
+            
             # Spatial filtering
             spatial_out = torch.mm(
                 self.spatial_ker_weights,
                 spatial_filter.apply(q_values).view(self.num_labels, -1),
             )
 
+            
             # Bilateral filtering
             bilateral_out = torch.mm(
                 self.bilateral_ker_weights,
                 bilateral_filter.apply(q_values).view(self.num_labels, -1),
             )
 
-            # Compatibility transform
-            msg_passing_out = (
-                spatial_out + bilateral_out
-            )  # Shape: (self.num_labels, -1)
-            msg_passing_out = torch.mm(self.compatibility_matrix, msg_passing_out).view(
-                self.num_labels, h, w
-            )
 
-            # Adding unary potentials
+            # Compatibility transform
+            msg_passing_out = spatial_out + bilateral_out
+
+
+            msg_passing_out = torch.mm(self.compatibility_matrix, msg_passing_out).view(
+                self.num_labels, d, h, w
+            )
+            
+
+            # Adding unary potentials back
             cur_logits = msg_passing_out + logits
 
-        return torch.unsqueeze(cur_logits, 0)
+            if torch.isnan(q_values).any():
+                raise ValueError('NaN values found in q_values tensor.')
+
+            if torch.isnan(spatial_out).any():
+                raise ValueError('NaN values found in spatial_out tensor.')
+
+            if torch.isnan(bilateral_out).any():
+                raise ValueError('NaN values found in bilateral_out tensor.')
+
+            if torch.isnan(msg_passing_out).any():
+                raise ValueError('NaN values found in msg_passing_out tensor.')
+            
+        return torch.unsqueeze(self._softmax(cur_logits), 0)
+
